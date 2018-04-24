@@ -1,89 +1,171 @@
 package controllers;
 
 
-import io.vertx.core.AbstractVerticle;
+import com.google.gson.Gson;
+import dao.InMemoryGameDataDao;
+import io.vertx.core.DeploymentOptions;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
-import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
-import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.handler.BodyHandler;
-import models.GameData;
+import io.vertx.rxjava.core.eventbus.Message;
+import io.vertx.rxjava.ext.web.RoutingContext;
+import rx.Observable;
+import rx.schedulers.Schedulers;
 import services.GameDataService;
+import services.GameDataServiceImpl;
+import services.ReplyError;
 
 import java.util.HashMap;
 import java.util.Map;
 
-public class GameController extends AbstractVerticle {
+public class GameController extends BaseVerticle {
 
     private static Map<Long, JsonObject> databases = new HashMap<>();
     private GameDataService gameDataService;
+    private Gson gson = new Gson();
 
-    public GameController(GameDataService gameDataService) {
-        this.gameDataService = gameDataService;
-    }
+//    public GameController(GameDataService gameDataService) {
+//        this.gameDataService = gameDataService;
+//    }
 
     @Override
-    public void start() {
-        Vertx vertx = Vertx.vertx();
-        Router router = Router.router(vertx);
-        router.route().method(HttpMethod.POST).handler(BodyHandler.create());
-        vertx.createHttpServer().requestHandler(router::accept).listen(8080);
-        setupRouting(router);
+    public void startVerticle(Future<Void> startFuture) {
+        gameDataService = new GameDataServiceImpl(new InMemoryGameDataDao());
+        setupHandlers();
 
+        DeploymentOptions deploymentOptions = new DeploymentOptions()
+                .setWorker(true)
+                .setInstances(20)
+                .setWorkerPoolSize(20);
+
+        try {
+            vertx.deployVerticle(WorkerVerticle.class.getCanonicalName(), deploymentOptions, result -> {
+                if (result.succeeded()) {
+                    startFuture.complete();
+                } else {
+                    startFuture.fail(result.cause());
+                }
+            });
+        } catch (Throwable throwable) {
+            startFuture.fail(throwable);
+        }
     }
 
-    public void setupRouting(Router router) {
-        router.route(HttpMethod.POST, "/create").handler(routingContext -> {
-            JsonObject body = routingContext.getBodyAsJson();
-            int totalCheckpoints = body.getInteger("total_checkpoints");
-            long gameId = gameDataService.create(totalCheckpoints);
-            routingContext.response().end("game_id: " + gameId);
-        });
 
-        router.route(HttpMethod.POST, "/join").handler(routingContext -> {
-            JsonObject body = routingContext.getBodyAsJson();
+//    @Override
+//    public void start() {
+//        Vertx vertx = Vertx.vertx();
+//        Router router = Router.router(vertx);
+//        router.route().method(HttpMethod.POST).handler(BodyHandler.create());
+//        vertx.createHttpServer().requestHandler(router::accept).listen(8080);
+//        setupRouting(router);
+//
+//    }
+
+    private void setupHandlers() {
+        addHandler("post.create", this::postGame);
+        addHandler("post.join", this::postJoin);
+        addHandler("get.data", this::getData);
+        addHandler("post.move", this::postMove);
+    }
+
+
+    private void postGame(Message<JsonObject> message) {
+        JsonObject body = message.body();
+        int totalCheckpoints = body.getInteger("total_checkpoints");
+        gameDataService.create(totalCheckpoints, message).subscribe(gameId ->
+                message.reply(new JsonObject().put("game_id", gameId)), error ->
+                new ReplyError(message).replyError(500, "Error creating game")
+        );
+    }
+
+    private void postJoin(Message<JsonObject> message) {
+        JsonObject body = message.body();
+        if ((body.getLong("game_id") == null)) {
+            new ReplyError(message).replyError(400, "No game Id");
+        } else if (body.getString("name") == null) {
+            new ReplyError(message).replyError(400, "No player name");
+        } else {
             long gameId = body.getLong("game_id");
             String name = body.getString("name");
-            gameDataService.addPlayer(gameId, name); //TODO get/return player id
-            routingContext.response().end();
-        });
+            gameDataService.addPlayer(gameId, name).subscribe(player -> {
+                vertx.eventBus().rxSend("get.worker", message.body()).toObservable().flatMap(wr -> {
+                    Object wRBody = wr.body();
+                    return Observable.just(wr);
+                }).subscribe();
+                message.reply("player_id: " + player.getId());
+            }, error ->
+                    new ReplyError(message).replyError(500, "Error adding player"));
+        }
+    }
 
-        router.route(HttpMethod.GET, "/data").handler(routingContext -> {
-            MultiMap queryParams = routingContext.queryParams();
-            long gameId = Long.valueOf(queryParams.get("game_id"));
-            GameData gameData = gameDataService.getGameData(gameId);
-            routingContext.response().end(); //TODO - convert data to json
-        });
+    private void getData(Message<JsonObject> message) {
+        JsonObject body = message.body();
+        long gameId = body.getLong("game_id");
+        gameDataService.getGameData(gameId).retryWhen(errors ->
+                errors.zipWith(Observable.range(1, 3), (error, retryCount) -> {
+                    if (retryCount < 3) {
+                        gameDataService.getGameData(gameId);
+                    }
+                    return Observable.error(error);
+                }).flatMap(e -> e)).subscribe(game ->
+                message.reply(gson.toJson(game)), error ->
+                new ReplyError(message).replyError(500, "Error getting data"));
+    }
 
-        router.route(HttpMethod.POST, "/move").handler(routingContext -> {
-            JsonObject body = routingContext.getBodyAsJson();
-            Long playerId = body.getLong("player_id");
-            Long cardId = body.getLong("card_id");
+    private void postMove(Message<JsonObject> message) {
+        JsonObject body = message.body();
+        if (body.getLong("game_id") == null) {
+            new ReplyError(message).replyError(400, "No game id");
+        } else if (body.getInteger("player_id") == null) {
+            new ReplyError(message).replyError(400, "No player id");
+        } else if (body.getInteger("card_id") == null) {
+            new ReplyError(message).replyError(400, "No card id");
+        } else {
+            long gameId = body.getLong("game_id");
+            int playerId = body.getInteger("player_id");
+            int cardId = body.getInteger("card_id");
+            gameDataService.doMove(gameId, playerId, cardId).subscribe(robot ->
+                    message.reply(new JsonObject().put("success", true)), error ->
+                    new ReplyError(message).replyError(500, "Error getting data"));
+        }
+    }
+}
 
-            routingContext.response().end();
-        });
-
-//        router.route(HttpMethod.POST, "/data").handler(routingContext -> {
-//            postGameData(routingContext);
-//            routingContext.response().end();
+//    public void setupRouting(Router router) {
+//        router.route(HttpMethod.POST, "/create").handler(routingContext -> {
+//            JsonObject body = routingContext.getBodyAsJson();
+//            int totalCheckpoints = body.getInteger("total_checkpoints");
+//            gameDataService.create(totalCheckpoints).subscribe(gameId ->
+//                    routingContext.response().end("game_id: " + gameId));
 //        });
 
-//        router.route(HttpMethod.GET, "/hand").handler(routingContext -> {
-//            routingContext.response().end(getHand(routingContext).toString());
+//        router.route(HttpMethod.POST, "/join").handler(routingContext -> {
+//            JsonObject body = routingContext.getBodyAsJson();
+//            long gameId = body.getLong("game_id");
+//            String name = body.getString("name");
+//            gameDataService.addPlayer(gameId, name).subscribe(player ->
+//                    routingContext.response().end("player_id: " + player.getId()));
 //        });
 
-//        router.route(HttpMethod.POST, "/hand").handler(routingContext -> {
-//            postHand(routingContext);
-//            routingContext.response().end();
+//        router.route(HttpMethod.GET, "/data").handler(routingContext -> {
+//            MultiMap queryParams = routingContext.queryParams();
+//            long gameId = Long.valueOf(queryParams.get("game_id"));
+//            gameDataService.getGameData(gameId).subscribe(game ->
+//                    routingContext.response().end(gson.toJson(game))); //TODO - convert data to json
 //        });
 
 //        router.route(HttpMethod.POST, "/move").handler(routingContext -> {
-//            chooseCardOrder();
-//            routingContext.response().end("user submits 5 of the 9 cards and the rest are discarded. Robot boardLocation updated");
+//            JsonObject body = routingContext.getBodyAsJson();
+//            long gameId = body.getLong("game_id");
+//            int playerId = body.getInteger("player_id");
+//            int cardId = body.getInteger("card_id");
+//            gameDataService.doMove(gameId, playerId, cardId).subscribe(robot ->
+//                    routingContext.response().end());
 //        });
-    }
+//    }
 
 //    private static JsonObject buildCheckpointsBody(Set<BoardLocation> checkpoints) {
 //        String checkpointId = "checkpoint_";
@@ -170,7 +252,6 @@ public class GameController extends AbstractVerticle {
 //    }
 
 
-
 //    private static JsonArray getHand(RoutingContext routingContext) {
 //        MultiMap queryParams = routingContext.queryParams();
 //        long gameId = Long.valueOf(queryParams.get("game_id"));
@@ -232,7 +313,6 @@ public class GameController extends AbstractVerticle {
 //        }
 //        return list;
 //    }
-}
 
 
 //        robots = new ArrayList<>();

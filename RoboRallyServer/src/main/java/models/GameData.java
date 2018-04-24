@@ -1,16 +1,19 @@
 package models;
 
+
+import io.vertx.core.json.JsonArray;
+import rx.Observable;
+
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class GameData implements Cloneable {
 
-    private long id;
+    private int id;
     private long playerCounter = 0;
     private BoardLocation satellite;
     private BoardLocation reboot;
     private Set<BoardLocation> checkpoints;
-    private Map<Long, Player> players = new HashMap<>();
+    private List<Player> players = new ArrayList<>();
     private Set<BoardLocation> robots = new HashSet<>();
 
     public GameData(BoardLocation satellite, BoardLocation reboot, Set<BoardLocation> checkpoints) {
@@ -19,25 +22,30 @@ public class GameData implements Cloneable {
         this.checkpoints = checkpoints;
     }
 
-    public void addPlayer(String name, Robot robot) {
-        players.put(playerCounter++, new Player(name, robot, playerCounter++));
+    public void addPlayer(Player player) {
+        player.setId(++playerCounter);
+        players.add(player);
     }
 
-    public Set<BoardLocation> getLocationsOfAllPlayers() {
-        Set<BoardLocation> currentRobotLocations = new HashSet<>();
-        for (Player player : players.values()) {
-            currentRobotLocations.add(player.getRobot().getBoardLocation());
+    public Observable<Set<BoardLocation>> getLocationsOfAllPlayers() {
+        if (players.isEmpty()) {
+            return Observable.just(robots);
         }
-        return currentRobotLocations;
+        return Observable.from(players).flatMap(player ->
+                player.getRobot().map(robot -> {
+                    robots.add(robot.getBoardLocation());
+                    return robots;
+                }));
     }
 
     public long getId() {
         return id;
     }
 
-    public void setId(long id) {
+    public void setId(int id) {
         this.id = id;
     }
+
     public BoardLocation getSatelliteLocation() {
         return satellite;
     }
@@ -51,10 +59,10 @@ public class GameData implements Cloneable {
     }
 
     public Collection<Player> getPlayers() {
-        return players.values();
+        return players;
     }
 
-    public Player getPlayerByPlayerId(long playerId) {
-        return players.get(playerId);
+    public Observable<Player> getPlayerByPlayerId(int playerId) {
+        return Observable.just(players.get(playerId - 1));
     }
 }

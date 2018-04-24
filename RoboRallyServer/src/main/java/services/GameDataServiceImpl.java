@@ -1,32 +1,31 @@
 package services;
 
 import dao.GameDataDao;
+import io.vertx.core.json.JsonObject;
+import io.vertx.rxjava.core.eventbus.Message;
 import models.*;
+import rx.Observable;
 
 import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class GameDataServiceImpl implements GameDataService {
 
     private GameDataDao gameDataDao;
+    private ReplyError replyError;
 
     public GameDataServiceImpl(GameDataDao gameDataDao) {
         this.gameDataDao = gameDataDao;
     }
 
     @Override
-    public long create(int totalCheckpoints) {
+    public Observable<Long> create(int totalCheckpoints, Message<JsonObject> message) {
 
-        if (totalCheckpoints < 0) {
-            totalCheckpoints = 1;
+        if (totalCheckpoints < 0 || totalCheckpoints > 3) {
+            new ReplyError(message).replyError(400, "Invalid number of checkpoints");
         }
 
-        if (totalCheckpoints > 3) {
-            totalCheckpoints = 3;
-        }
-
-        BoardLocation satalite = new BoardLocation(0, 4);
+        BoardLocation satellite = new BoardLocation(0, 4);
         BoardLocation reboot = new BoardLocation(4, 4);
         HashSet<BoardLocation> checkpoints = new HashSet<>();
 
@@ -35,7 +34,7 @@ public class GameDataServiceImpl implements GameDataService {
             checkpoints.add(randomCheckpointBoardLocation);
         }
 
-        return gameDataDao.addGame(new GameData(satalite, reboot, checkpoints));
+        return Observable.just(gameDataDao.addGame(new GameData(satellite, reboot, checkpoints)));
     }
 
     private BoardLocation getRandomCheckpointLocation() {
@@ -45,40 +44,89 @@ public class GameDataServiceImpl implements GameDataService {
     }
 
     @Override
-    public void addPlayer(long gameId, String name) {
-        GameData gameData = getGameData(gameId);
-        BoardLocation proposedLocation = getRandomRobotLocation();
-        Set<BoardLocation> robotLocations = gameData.getLocationsOfAllPlayers();
-
-        while (robotLocations.contains(proposedLocation)) {
-            proposedLocation = getRandomRobotLocation();
-        }
-        gameData.addPlayer(name, new Robot(proposedLocation, RobotDirection.DOWN));
+    public Observable<Player> addPlayer(long gameId, String name) {
+        return getGameData(gameId).flatMap(game ->
+                game.getLocationsOfAllPlayers().flatMap(playerSet -> {
+                    BoardLocation proposedLocation = getRandomRobotLocation();
+                    while (playerSet.contains(proposedLocation)) {
+                        proposedLocation = getRandomRobotLocation();
+                    }
+                    BoardLocation finalProposedLocation = proposedLocation;
+                    Player newPlayer = new Player(name, new Robot(finalProposedLocation, RobotDirection.DOWN));
+                    game.addPlayer(newPlayer);
+                    return Observable.just(newPlayer);
+                }));
     }
 
+//        Observable<GameData> gameData = getGameData(gameId);
+//
+//        Observable<Set<BoardLocation>> ObservableSetOfRobotLocations = gameData.flatMap(data ->
+//                Observable.just(data.getLocationsOfAllPlayers()));
+//
+//        ObservableSetOfRobotLocations.flatMap(setOfRobotLocations -> {
+//            BoardLocation proposedLocation = getRandomRobotLocation();
+//            while (setOfRobotLocations.contains(proposedLocation)) {
+//                proposedLocation = getRandomRobotLocation();
+//            }
+//            BoardLocation finalProposedLocation = proposedLocation;
+//            return gameData.flatMap(data -> {
+//                data.addPlayer(name, new Robot(finalProposedLocation, RobotDirection.DOWN));
+//                return Observable.just(data);
+//            });
+//        });
+//        return gameData;
+
     @Override
-    public GameData getGameData(long gameId) {
+    public Observable<GameData> getGameData(long gameId) {
         return gameDataDao.getGameById(gameId);
     }
 
     @Override
-    public void doMove(long gameId, long playerId, long cardId) {
-        GameData gameData = getGameData(gameId);
-        Player player = gameData.getPlayerByPlayerId(playerId);
+    public Observable<Robot> doMove(long gameId, int playerId, int cardId) {
+        return getGameData(gameId).flatMap(game ->
+                game.getPlayerByPlayerId(playerId).flatMap(player ->
+                        player.getCardByCardId(cardId).flatMap(card -> {
+//                            if (card.getCardLocation() != CardLocation.HAND) {
+//                                throw new IllegalArgumentException("Card is not in hand");
+//                            }
+                            return player.getRobot().flatMap(robot -> {
+                                if (card.getCardType().isMovement()) {
+                                    moveRobot(robot, card.getCardType().getUnit());
+                                } else {
+                                    rotateRobot(robot, card.getCardType().getUnit());
+                                }
+                                return Observable.just(robot);
+                            });
+                        })));
 
-        Card card = player.getCardByCardId(cardId);
-        if (!card.getCardLocation().equals(CardLocation.HAND)) {
-            throw new IllegalArgumentException("Card is not in hand");
-        }
-
-        Robot robot = player.getRobot();
-        CardType cardType = card.getCardType();
-        if (card.getCardType().isMovement()) {
-            moveRobot(robot, cardType.getUnit());
-        } else {
-            rotateRobot(robot, cardType.getUnit());
-        }
     }
+//        Observable<GameData> gameData = getGameData(gameId);
+//
+//        Observable<Player> player = gameData.flatMap(playerData ->
+//                Observable.just(playerData.getPlayerByPlayerId(playerId)));
+//
+//        Observable<Card> card = player.flatMap(cardData ->
+//                Observable.just(cardData.getCardByCardId(cardId)));
+//
+//        card.flatMap(cardData -> {
+//            if (cardData.getCardLocation() != CardLocation.HAND) {
+//                throw new IllegalArgumentException("Card is not in hand");
+//            }
+//            return Observable.empty();
+//        });
+//
+//        Observable<Robot> robot = player.flatMap(robotData ->
+//                Observable.just(robotData.getRobot()));
+//
+//        Observable<CardType> cardType = card.flatMap(cardData -> {
+//
+//            if (cardData.getCardType().isMovement()) {
+//                moveRobot(robot, cardData.getCardType().getUnit());
+//            } else {
+//                rotateRobot(robot, cardData.getCardType().getUnit());
+//            }
+//            return Observable.empty();
+//        });
 
 
     private BoardLocation getRandomRobotLocation() {

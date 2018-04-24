@@ -1,15 +1,17 @@
 package dao;
 
+import com.google.gson.Gson;
 import models.Card;
 import models.GameData;
 import models.Player;
+import rx.Observable;
 
 import java.util.HashMap;
 import java.util.Map;
 
 public class InMemoryGameDataDao implements GameDataDao{
 
-    private static Long idCount = 0L;
+    private static int idCount = 0;
     private Map<Long, GameData> games = new HashMap<>();
 
     @Override
@@ -20,8 +22,8 @@ public class InMemoryGameDataDao implements GameDataDao{
     }
 
     @Override
-    public GameData getGameById(long gameId) {
-        return games.get(gameId);
+    public Observable<GameData> getGameById(long gameId) {
+        return Observable.just(games.get(gameId));
     }
 
     public void updateGame(long gameId, GameData gameData) {
@@ -69,7 +71,7 @@ public class InMemoryGameDataDao implements GameDataDao{
 //        return 0;
 //    }
 
-    private long getNewId() {
+    private int getNewId() {
         idCount++;
         return idCount;
     }

@@ -3,6 +3,7 @@ package dao;
 import models.Card;
 import models.GameData;
 import models.Player;
+import rx.Observable;
 
 public interface GameDataDao {
 
@@ -13,7 +14,7 @@ public interface GameDataDao {
      */
     long addGame(GameData gameData);
 
-    GameData getGameById(long id);
+    Observable<GameData> getGameById(long id);
 
     void updateGame(long gameId, GameData gameData);
 

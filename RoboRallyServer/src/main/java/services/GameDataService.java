@@ -1,14 +1,19 @@
 package services;
 
+import io.vertx.core.json.JsonObject;
+import io.vertx.rxjava.core.eventbus.Message;
 import models.GameData;
+import models.Player;
+import models.Robot;
+import rx.Observable;
 
 public interface GameDataService {
 
-    long create(int totalCheckpoints);
+    Observable<Long> create(int totalCheckpoints, Message<JsonObject> message);
 
-    void addPlayer(long gameId, String name);
+    Observable<Player> addPlayer(long gameId, String name);
 
-    GameData getGameData(long gameId);
+    Observable<GameData> getGameData(long gameId);
 
-    void doMove(long gameId, long playerId, long cardId);
+    Observable<Robot> doMove(long gameId, int playerId, int cardId);
 }

@@ -4,13 +4,15 @@ import java.util.*;
 
 public class Deck {
 
-    private Map<Long, Card> cards = new LinkedHashMap<>();
+    private Map<Integer, Card> cards = new LinkedHashMap<>();
 
 
     public Deck() {
+        int cardCount = 0;
         for (CardType type : CardType.values()) {
-            for (long i = 0; i < type.getMaxNumInDeck(); i++) {
-                cards.put(i, new Card(type, CardLocation.DECK));
+            for (int i = 0; i < type.getMaxNumInDeck(); i++) {
+                cards.put(cardCount, new Card(type, CardLocation.DECK));
+                cardCount++;
             }
         }
     }
@@ -25,7 +27,7 @@ public class Deck {
         return cards.values();
     }
 
-    public Card getCardByCardId(long cardId) {
+    public Card getCardByCardId(int cardId) {
         return cards.get(cardId);
     }
 }
